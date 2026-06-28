@@ -19,6 +19,9 @@ The tool is intended for PR-sized mutation gates where the caller supplies the b
 - [x] Isolated `git-worktree` and `copy` execution modes.
 - [x] Parallel execution (`--jobs` > 1) for isolated workspace modes.
 - [x] Clang compile-command loading and AST node kind recording in reports.
+- [x] Expanded mutator catalog: `AssignmentOperator`, `BitwiseOperator`, `UnaryOperator`, `ReturnValue`.
+- [x] Repro-command capture on mutant runs (`reproCommand`) and persisted build/test command metadata.
+- [x] Sharded execution via `--shard-index` / `--shard-total`.
 
 ## Non-goals
 
@@ -90,6 +93,7 @@ Execution options:
 
 - `--timeout <seconds>`: per-mutant timeout.
 - `--jobs <n>`: parallel mutant workers (requires `--worktree-mode copy` or `git-worktree`).
+- `--shard-index <i> --shard-total <n>`: deterministically partition mutants across runners.
 - `--worktree-mode inplace|git-worktree|copy`: default `inplace` for compatibility, safer modes for isolated mutation execution.
 - `--resume <report>`: skip completed mutants from a prior report.
 
@@ -229,7 +233,11 @@ Initial mutators should match the embedded engine:
 - `EqualityOperator`: `==` and `!=` swaps.
 - `LogicalOperator`: `&&` and `||` swaps.
 - `BooleanLiteral`: `true` and `false` swaps.
-- `ArithmeticOperator`: `+` `-` `*` `/` swaps, opt-in by default.
+- `ArithmeticOperator`: `+` `-` `*` `/` swaps.
+- `AssignmentOperator`: `+=` `-=` `*=` `/=` swaps.
+- `BitwiseOperator`: `&` `|` `^` swaps.
+- `UnaryOperator`: `!` removal and duplication.
+- `ReturnValue`: `return true` / `return false` swaps.
 
 Near-term additions:
 
@@ -293,7 +301,7 @@ Safety rules:
 - Write all logs under a configurable artifact directory.
 - Emit enough cleanup metadata to recover after interruption.
 
-Current status: `git-worktree` and `copy` modes are now implemented for isolated per-mutant runs. Inplace mode still enforces dirty-tree guard and preserves existing cleanup behavior.
+Current status: `git-worktree` and `copy` modes are now implemented for isolated per-mutant runs. Inplace mode still enforces dirty-tree guard and preserves existing cleanup behavior. Sharding is also implemented, applied after `--max-mutants` and `--run-mutant-id` filtering so shards are deterministic and non-overlapping.
 
 ## Configuration file
 
@@ -380,13 +388,7 @@ cxx-mutant/
   src/cxx_mutant/
     __init__.py
     cli.py
-    config.py
-    discover.py
-    mutate.py
-    runner.py
-    report.py
-    token_mode.py
-    clang_mode.py
+    engine.py
   tests/
     fixtures/
     test_discover.py
@@ -394,9 +396,9 @@ cxx-mutant/
     test_report_schema.py
     test_cli.py
   docs/
-    config.md
-    reports.md
-    marmorkrebs.md
+    cxx-mutant-spec.md
+    migration-from-marmorkrebs.md
+    stryker-integration.md
     mutators.md
   examples/
     minimal/
@@ -429,7 +431,7 @@ Python is the lowest-friction first packaging route because the current engine i
 - Add timeout handling.
 - Add resume from report.
 - Add isolated worktree mode.
-- Add sharding groundwork.
+- Add and implement sharding.
 
 ### M3: clang-aware mutation
 
@@ -459,7 +461,7 @@ The standalone tool is ready to be treated as independent when:
 
 ## Open decisions
 
-- Repository name: `cxx-mutant`, `marmorkrebs-cxx`, or `claw-mutant-cxx`.
+- Repository name: `cxx-mutant` (selected).
 - Initial license.
 - Whether Metal support remains token-only or gets its own shader-aware mode.
 - Whether thresholding belongs in `cxx-mutant`, Marmorkrebs, or both.

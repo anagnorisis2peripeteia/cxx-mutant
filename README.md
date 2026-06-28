@@ -43,6 +43,8 @@ Useful options:
 - `--mode token|clang` (`--mode clang` requires libclang bindings and parse-backed discovery; use `--mode token` when unavailable)
 - `--jobs <n>` (parallel mutant execution across isolated worktree workers)
 - `--worktree-mode inplace|git-worktree|copy` (`git-worktree` and `copy` create isolated per-mutant workspaces)
+- `--shard-index <i>` / `--shard-total <n>` split mutant set deterministically across agents
+- `--output-format cxx-mutant|legacy` for report projection
 - `--allow-dirty` to opt out of inplace clean-tree checks
 
 ## Repository notes
@@ -50,6 +52,7 @@ Useful options:
 - Source layout: `src/cxx_mutant/engine.py` is execution + reporting; `src/cxx_mutant/cli.py` is the command surface.
 - For migration from embedded Marmorkrebs, see [`docs/migration-from-marmorkrebs.md`](docs/migration-from-marmorkrebs.md).
 - For Stryker-facing projection details, see [`docs/stryker-integration.md`](docs/stryker-integration.md).
+- For implemented mutators and default presets, see [`docs/mutators.md`](docs/mutators.md).
 
 ## Compatibility with Marmorkrebs
 

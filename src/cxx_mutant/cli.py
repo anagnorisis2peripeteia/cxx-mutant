@@ -38,12 +38,17 @@ def _load_config(path: str | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
-def _pick_config_path(explicit: str | None) -> str:
+def _pick_config_path(explicit: str | None, repo_root: str | None = None) -> str:
     if explicit:
         return explicit
-    for candidate in DEFAULT_CONFIG_FILES:
-        if os.path.exists(candidate):
-            return candidate
+    search_roots = [os.getcwd()]
+    if repo_root:
+        search_roots.insert(0, repo_root)
+    for root in search_roots:
+        for candidate in DEFAULT_CONFIG_FILES:
+            path = os.path.join(root, candidate)
+            if os.path.exists(path):
+                return path
     return explicit or ""
 
 
@@ -109,9 +114,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--mutators", default=None)
     run.add_argument("--output-format", choices=["legacy", "cxx-mutant"], default="cxx-mutant")
     run.add_argument("--format", choices=["json", "markdown", "html", "sarif"], default="json")
-    run.add_argument("--mode", choices=["token", "clang"], default="token")
-    run.add_argument("--jobs", type=int, default=1, help="Parallel mutant execution with isolated worktrees.")
-    run.add_argument("--worktree-mode", dest="worktree_mode", choices=["inplace", "git-worktree", "copy"], default="inplace")
+    run.add_argument("--mode", choices=["token", "clang"], default=None)
+    run.add_argument("--jobs", type=int, default=None, help="Parallel mutant execution with isolated worktrees.")
+    run.add_argument("--worktree-mode", dest="worktree_mode", choices=["inplace", "git-worktree", "copy"], default=None)
     run.add_argument("--allow-dirty", action="store_true")
     run.add_argument("--threshold", type=float, default=None)
     run.add_argument("--fail-on-empty", action="store_true", dest="fail_on_empty")
@@ -119,6 +124,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--artifact-dir", default=None)
     run.add_argument("--resume", default=None)
     run.add_argument("--quiet", action="store_true")
+    run.add_argument("--shard-index", type=int, default=None)
+    run.add_argument("--shard-total", type=int, default=None)
 
     list_mutants = subparsers.add_parser("list-mutants", help="list mutants without running build/tests")
     list_mutants.add_argument("--repo", required=True)
@@ -130,7 +137,7 @@ def _build_parser() -> argparse.ArgumentParser:
     list_mutants.add_argument("--include", default=None)
     list_mutants.add_argument("--exclude", default=None)
     list_mutants.add_argument("--mutators", default=None)
-    list_mutants.add_argument("--mode", choices=["token", "clang"], default="token")
+    list_mutants.add_argument("--mode", choices=["token", "clang"], default=None)
     list_mutants.add_argument("--format", choices=["json"], default="json")
 
     run_mutant = subparsers.add_parser("run-mutant", help="run a single mutant by stable ID")
@@ -148,16 +155,18 @@ def _build_parser() -> argparse.ArgumentParser:
     run_mutant.add_argument("--mutators", default=None)
     run_mutant.add_argument("--fail-on-empty", action="store_true", dest="fail_on_empty")
     run_mutant.add_argument("--threshold", type=float, default=None)
-    run_mutant.add_argument("--mode", choices=["token", "clang"], default="token")
-    run_mutant.add_argument("--worktree-mode", dest="worktree_mode", choices=["inplace", "git-worktree", "copy"], default="inplace")
+    run_mutant.add_argument("--mode", choices=["token", "clang"], default=None)
+    run_mutant.add_argument("--worktree-mode", dest="worktree_mode", choices=["inplace", "git-worktree", "copy"], default=None)
     run_mutant.add_argument("--allow-dirty", action="store_true")
     run_mutant.add_argument("--quiet", action="store_true")
+    run_mutant.add_argument("--shard-index", type=int, default=None)
+    run_mutant.add_argument("--shard-total", type=int, default=None)
 
     return parser
 
 
 def _resolve_defaults(args: argparse.Namespace) -> dict[str, Any]:
-    config_path = _pick_config_path(args.config)
+    config_path = _pick_config_path(args.config, getattr(args, "repo", None))
     cfg = _load_config(config_path) if config_path else {}
 
     execution = cfg.get("execution", {}) if isinstance(cfg.get("execution"), dict) else {}
@@ -177,20 +186,30 @@ def _resolve_defaults(args: argparse.Namespace) -> dict[str, Any]:
             args.include_metal if hasattr(args, "include_metal") else False
             or execution.get("includeMetal", False)
         ),
-        "mutators": args.mutators or execution.get("mutators") or cfg.get("mutators"),
+        "mutators": args.mutators or execution.get("mutators") or execution.get("mutationMutators") or cfg.get("mutators"),
         "threshold": args.threshold if args.threshold is not None else execution.get("threshold"),
         "timeout": args.timeout if args.timeout is not None else execution.get("timeoutSeconds"),
         "artifact_dir": args.artifact_dir if hasattr(args, "artifact_dir") else execution.get("artifactDir"),
-        "mode": getattr(args, "mode", "token"),
-        "jobs": getattr(args, "jobs", None),
-        "worktree_mode": getattr(args, "worktree_mode", "inplace"),
+        "mode": args.mode if hasattr(args, "mode") and args.mode is not None else execution.get("mode", "token"),
+        "jobs": args.jobs if hasattr(args, "jobs") and args.jobs is not None else execution.get("jobs", 1),
+        "worktree_mode": (
+            args.worktree_mode
+            if hasattr(args, "worktree_mode") and args.worktree_mode is not None
+            else execution.get("worktreeMode", execution.get("workTreeMode", "inplace"))
+        ),
         "allow_dirty": bool(getattr(args, "allow_dirty", False)),
         "resume": args.resume if hasattr(args, "resume") else None,
         "fail_on_empty": args.fail_on_empty if hasattr(args, "fail_on_empty") else False,
         "quiet": args.quiet if hasattr(args, "quiet") else False,
-        "format": args.format,
-        "output_format": args.output_format,
+        "format": args.format if hasattr(args, "format") and args.format is not None else execution.get("format", "json"),
+        "output_format": (
+            args.output_format
+            if hasattr(args, "output_format") and args.output_format is not None
+            else execution.get("outputFormat", "legacy" if args.command == "run" else "cxx-mutant")
+        ),
         "report": args.report if hasattr(args, "report") else None,
+        "shard_index": args.shard_index if hasattr(args, "shard_index") else None,
+        "shard_total": args.shard_total if hasattr(args, "shard_total") else None,
         "files_include": _coerce_list(files_cfg.get("include")) if isinstance(files_cfg, dict) else [],
         "files_exclude": _coerce_list(files_cfg.get("exclude")) if isinstance(files_cfg, dict) else [],
         "report_threshold": report_cfg.get("threshold", None),
@@ -210,6 +229,15 @@ def _resolve_defaults(args: argparse.Namespace) -> dict[str, Any]:
 
     if defaults["jobs"] is not None and defaults["jobs"] < 1:
         raise ValueError("--jobs must be >= 1")
+
+    if defaults["shard_total"] is not None and defaults["shard_total"] < 1:
+        raise ValueError("--shard-total must be >= 1")
+    if defaults["shard_index"] is not None and defaults["shard_total"] is None:
+        raise ValueError("--shard-index requires --shard-total")
+    if defaults["shard_total"] is not None and defaults["shard_index"] is None:
+        raise ValueError("--shard-total requires --shard-index")
+    if defaults["shard_index"] is not None and defaults["shard_total"] is not None and defaults["shard_index"] > defaults["shard_total"]:
+        raise ValueError("--shard-index must be <= --shard-total")
 
     if defaults["fail_on_empty"] is False and defaults.get("fail_on_empty_report"):
         defaults["fail_on_empty"] = True
@@ -288,6 +316,10 @@ def _run(args: argparse.Namespace) -> int:
         legacy_args.extend(["--mode", str(cfg["mode"])])
     if cfg["jobs"] is not None:
         legacy_args.extend(["--jobs", str(cfg["jobs"])])
+    if cfg["shard_index"] is not None:
+        legacy_args.extend(["--shard-index", str(cfg["shard_index"])])
+    if cfg["shard_total"] is not None:
+        legacy_args.extend(["--shard-total", str(cfg["shard_total"])])
     if cfg["worktree_mode"] is not None:
         legacy_args.extend(["--worktree-mode", cfg["worktree_mode"]])
     if cfg["allow_dirty"]:
@@ -396,6 +428,10 @@ def _run_mutant(args: argparse.Namespace) -> int:
         legacy_args.extend(["--mode", str(cfg["mode"])])
     if cfg["jobs"] is not None:
         legacy_args.extend(["--jobs", str(cfg["jobs"])])
+    if cfg["shard_index"] is not None:
+        legacy_args.extend(["--shard-index", str(cfg["shard_index"])])
+    if cfg["shard_total"] is not None:
+        legacy_args.extend(["--shard-total", str(cfg["shard_total"])])
     if cfg["worktree_mode"] is not None:
         legacy_args.extend(["--worktree-mode", cfg["worktree_mode"]])
     if cfg["allow_dirty"]:

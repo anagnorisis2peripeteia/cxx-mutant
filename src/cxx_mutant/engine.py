@@ -25,38 +25,53 @@ from datetime import datetime, timezone
 import time
 from typing import Any
 
-# Stryker-equivalent operators, token-level. Each entry maps a matched operator
-# to its mutation. Applied to non-comment, non-string C++ source spans only.
+# Token-level mutators.
 MUTATORS: dict[str, list[tuple[str, str]]] = {
     "ConditionalBoundary": [("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")],
-    "EqualityOperator": [("==", "!="), ("!=", "==")],
+    "EqualityOperator": [("==", "!="), ("!=","==")],
     "LogicalOperator": [("&&", "||"), ("||", "&&")],
     "BooleanLiteral": [("true", "false"), ("false", "true")],
-    "ArithmeticOperator": [("+", "-"), ("-", "+"), ("*", "/")],
+    "ArithmeticOperator": [("+", "-"), ("-", "+"), ("*", "/"), ("/", "*")],
+    "AssignmentOperator": [("+=", "-="), ("-=", "+="), ("*=", "/="), ("/=", "*=")],
+    "BitwiseOperator": [("&", "|"), ("|", "&"), ("^", "|")],
+    "UnaryOperator": [("!", ""), ("!", "!!")],
+    "ReturnValue": [("return true", "return false"), ("return false", "return true")],
 }
-# Operators are matched as whole tokens with these boundaries so we never split
-# `<=` into `<`, mangle `->`/`+=`/`<<`, or touch `<T>` template brackets etc.
-# Bare `<`/`>` require surrounding spaces so we mutate spaced comparisons
-# (`M <= 16`, `a < b`) and not unspaced template brackets (`reduction<long>`),
-# which would only ever waste a full rebuild as a BUILD_ERROR.
-_TOKEN = {
+
+_TOKEN_PATTERNS: dict[str, str] = {
     "<=": r"<=",
     ">=": r">=",
     "==": r"==",
     "!=": r"!=",
     "&&": r"&&",
     "||": r"\|\|",
-    "<": r"(?<= )<( ?= )".replace(" ", ""),
-    ">": r"(?<= )>(?= )",
+    # Bare `<`/`>` require surrounding whitespace so we avoid touching templates.
+    "<": r"(?<=\s)<(?=\s)",
+    ">": r"(?<=\s)>(?=\s)",
     "true": r"\btrue\b",
     "false": r"\bfalse\b",
     "+": r"(?<![+])\+(?![+=])",
     "-": r"(?<![-])-(?![->=])",
     "*": r"(?<![*/])\*(?![*/=])",
+    "/": r"(?<!/)/(?!/)",
+    "+=": r"\+=",
+    "-=": r"-=",
+    "*=": r"\*=",
+    "/=": r"/=",
+    "&": r"(?<![&|])&(?!(?:[&=]))",
+    "|": r"(?<!\|)\|(?!(?:\||=))",
+    "^": r"\^",
+    "!": r"(?<![!])!(?![=])",
+    "return true": r"\breturn\s+true\b",
+    "return false": r"\breturn\s+false\b",
 }
-# Default to decision-logic mutators; arithmetic is noisy/expensive on dispatch
-# code (pointer math, deref) so it is opt-in via --mutators.
+
+SOURCE_EXTENSIONS = {".cpp", ".cc", ".cxx", ".c", ".mm", ".m", ".h", ".hpp", ".hh", ".hxx"}
 DEFAULT_MUTATORS = ["ConditionalBoundary", "EqualityOperator", "LogicalOperator", "BooleanLiteral"]
+
+
+def _ensure_supported_source_path(path: str) -> bool:
+    return os.path.splitext(path)[1].lower() in SOURCE_EXTENSIONS
 
 
 @dataclass
@@ -85,6 +100,8 @@ class Report:
     base: str | None = None
     threshold: float | None = None
     timeoutSeconds: int | None = None
+    buildCommand: str | None = None
+    testCommand: str | None = None
     total: int = 0
     killed: int = 0
     survived: int = 0
@@ -115,8 +132,18 @@ class Report:
 FATAL_STATUSES = {"KILLED", "SURVIVED", "BUILD_ERROR", "TIMEOUT"}
 
 
+def normalize_mutator_list(raw: str) -> list[str]:
+    vals = [v.strip() for v in (raw or "").split(",") if v.strip()]
+    unknown = [v for v in vals if v not in MUTATORS]
+    if unknown:
+        raise ValueError(f"unknown mutators: {unknown}")
+    return vals
+
+
 def _strip_noncode(line: str) -> str:
     """Blank out // comments and "string"/'c' literals so we never mutate them."""
+    if line.lstrip().startswith("#"):
+        return " " * len(line)
     out = re.sub(r"//.*$", "", line)
     out = re.sub(r'"(\\.|[^"\\])*"', lambda m: " " * len(m.group(0)), out)
     out = re.sub(r"'(\\.|[^'\\])*'", lambda m: " " * len(m.group(0)), out)
@@ -136,6 +163,10 @@ def parse_lines(spec: str) -> set[int]:
         else:
             out.add(int(part))
     return out
+
+
+def _quote_for_shell(value: str) -> str:
+    return shlex.quote(value)
 
 
 def changed_lines(repo: str, diff_base: str, path: str) -> set[int]:
@@ -159,7 +190,21 @@ def changed_lines(repo: str, diff_base: str, path: str) -> set[int]:
     return lines
 
 
+def mutation_repro_command(mut: Mutant, repo: str, build_cmd: str, test_cmd: str, report: str | None = None) -> str:
+    return (
+        f"cxx-mutant run-mutant --repo {_quote_for_shell(repo)} "
+        f"--id {_quote_for_shell(mut.id)} "
+        f"--build-command {_quote_for_shell(build_cmd)} "
+        f"--test-command {_quote_for_shell(test_cmd)} "
+        f"--report {_quote_for_shell(report or os.path.join(repo, 'mutation.json'))} "
+        "--output-format cxx-mutant"
+    )
+
+
 def discover(repo: str, path: str, only: set[int] | None, enabled: list[str]) -> list[Mutant]:
+    if not _ensure_supported_source_path(path):
+        return []
+
     full = os.path.join(repo, path)
     with open(full) as f:
         src = f.readlines()
@@ -170,7 +215,10 @@ def discover(repo: str, path: str, only: set[int] | None, enabled: list[str]) ->
         code = _strip_noncode(raw)
         for mutator in enabled:
             for orig, new in MUTATORS[mutator]:
-                for m in re.finditer(_TOKEN[orig], code):
+                pattern = _TOKEN_PATTERNS.get(orig)
+                if pattern is None:
+                    continue
+                for m in re.finditer(pattern, code):
                     mut = Mutant(mutator, path, i, m.start(), orig, new)
                     mut.id = stable_id(mut)
                     muts.append(mut)
@@ -239,6 +287,8 @@ def _git_dirty_files(repo: str, paths: list[str]) -> list[str]:
 
 
 def _discover_mode(repo: str, path: str, only: set[int] | None, enabled: list[str], mode: str) -> list[Mutant]:
+    if not _ensure_supported_source_path(path):
+        return []
     if mode == "token":
         return discover(repo, path, only, enabled)
     if mode == "clang":
@@ -401,6 +451,18 @@ def _safe_basename(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", text)
 
 
+def _apply_shard(mutants: list[Mutant], shard_index: int | None, shard_total: int | None) -> list[Mutant]:
+    if not mutants:
+        return mutants
+    if shard_total in (None, 0, 1):
+        return mutants
+    if shard_index is None:
+        raise ValueError("--shard-total requires --shard-index")
+    if not (1 <= shard_index <= shard_total):
+        raise ValueError("--shard-index must be in [1, shard-total]")
+    return [m for idx, m in enumerate(mutants) if idx % shard_total == shard_index - 1]
+
+
 def _write_report(path: str, rep: Report, output_mode: str = "legacy") -> None:
     if output_mode == "cxx-mutant":
         payload = _report_dict(rep)
@@ -444,6 +506,10 @@ def _report_dict(rep: Report, repo: str | None = None, base: str | None = None,
             "worktreeMode": rep.execution.get("worktreeMode", "inplace"),
             "jobs": rep.execution.get("jobs", 1),
         },
+        "commands": {
+            "build": rep.buildCommand,
+            "test": rep.testCommand,
+        },
         "mutationTestingElements": _mutation_testing_elements(rep),
         "mutants": rep.mutants,
         "targetFiles": rep.target_files,
@@ -476,10 +542,12 @@ def _mutation_testing_elements(rep: Report) -> dict:
         files[file]["mutants"].append({
             "id": mut.get("id") or str(idx),
             "mutatorName": mut["mutator"],
+            "original": mut.get("original", ""),
             "replacement": mut["mutated"],
             "status": _mte_status(mut.get("status", "PENDING")),
             "statusReason": mut.get("detail", ""),
             "nodeKind": mut.get("nodeKind", ""),
+            "runCommand": mut.get("run", {}).get("reproCommand") if isinstance(mut.get("run"), dict) else None,
             "location": {
                 "start": {"line": mut["line"], "column": mut["col"]},
                 "end": {
@@ -510,24 +578,37 @@ def _format_markdown(rep: Report) -> str:
     lines = [
         "# cxx-mutant report",
         "",
-        f"- score: {rep.score:.2f}",
-        f"- mode: {rep.execution.get('mode', 'token')}",
-        f"- worktreeMode: {rep.execution.get('worktreeMode', 'inplace')}",
-        f"- killed: {rep.killed}",
-        f"- survived: {rep.survived}",
-        f"- build errors: {rep.buildError}",
-        f"- timeouts: {rep.timeouts}",
-        f"- total mutants: {rep.total}",
+        "| field | value |",
+        "|---|---|",
+        f"| score | {rep.score:.2f} |",
+        f"| threshold | {rep.threshold} |",
+        f"| mode | {rep.execution.get('mode', 'token')} |",
+        f"| worktreeMode | {rep.execution.get('worktreeMode', 'inplace')} |",
+        f"| jobs | {rep.execution.get('jobs', 1)} |",
+        f"| killed | {rep.killed} |",
+        f"| survived | {rep.survived} |",
+        f"| build errors | {rep.buildError} |",
+        f"| timeouts | {rep.timeouts} |",
+        f"| total mutants | {rep.total} |",
+        f"| target files | {', '.join(rep.target_files) if rep.target_files else '(none)'} |",
+        f"| build command | `{rep.buildCommand or ''}` |",
+        f"| test command | `{rep.testCommand or ''}` |",
         "",
         "## Surviving mutants",
     ]
     for mut in rep.mutants:
         if mut["status"] == "SURVIVED":
             lines.append(
-                f"- {mut['file']}:{mut['line']} {mut['original']}->{mut['mutated']} "
-                f"({mut['mutator']}) "
-                f"[{mut.get('durationMs', 0)}ms]"
+                f"- `{mut['file']}:{mut['line']}:{mut['col']}` "
+                f"{mut['mutator']} `{mut['original']} -> {mut['mutated']}` "
+                f"({mut.get('durationMs', 0)}ms)"
             )
+            command = mut.get("run", {}).get("reproCommand")
+            if command:
+                lines.append(f"  - reproduce: `{command}`")
+            detail = mut.get("detail")
+            if detail:
+                lines.append(f"  - detail: {detail}")
     return "\n".join(lines)
 
 
@@ -695,7 +776,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=None, dest="timeout_seconds",
                     help="Per-mutant timeout in seconds")
     ap.add_argument("--mode", default="token", choices=["token", "clang"])
-    ap.add_argument("--jobs", type=int, default=1)
+    ap.add_argument("--jobs", type=int, default=1, help="Parallel mutation workers")
+    ap.add_argument("--shard-index", type=int, default=None)
+    ap.add_argument("--shard-total", type=int, default=None, help="Split work into N shards")
     ap.add_argument("--worktree-mode", dest="worktree_mode", choices=["inplace", "git-worktree", "copy"], default="inplace")
     ap.add_argument("--allow-dirty", action="store_true")
     ap.add_argument("--output-format", default="legacy", choices=["legacy", "cxx-mutant"],
@@ -713,16 +796,24 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.jobs < 1:
         ap.error("--jobs must be >= 1")
+    if args.shard_total is not None and args.shard_total < 1:
+        ap.error("--shard-total must be >= 1")
+    if args.shard_index is not None and args.shard_total is None:
+        ap.error("--shard-index requires --shard-total")
+    if args.shard_total is not None and args.shard_index is None:
+        ap.error("--shard-total requires --shard-index")
+    if args.shard_index is not None and args.shard_index > (args.shard_total or 0):
+        ap.error("--shard-index must be <= --shard-total")
 
     if args.format == "json" and args.output_format == "legacy":
         output_mode = "legacy"
     else:
         output_mode = args.output_format
 
-    enabled = [m.strip() for m in args.mutators.split(",") if m.strip()]
-    bad = [m for m in enabled if m not in MUTATORS]
-    if bad:
-        ap.error(f"unknown mutators: {bad}")
+    try:
+        enabled = normalize_mutator_list(args.mutators)
+    except ValueError as exc:
+        ap.error(str(exc))
 
     repo = _ensure_target_root(args.repo)
     files = [p.strip() for p in args.files.split(",") if p.strip()]
@@ -743,6 +834,8 @@ def main(argv: list[str] | None = None) -> int:
         base=args.diff_base,
         threshold=args.threshold,
         timeoutSeconds=args.timeout_seconds,
+        buildCommand=args.build_cmd,
+        testCommand=args.test_cmd,
         execution={"mode": args.mode, "worktreeMode": args.worktree_mode, "jobs": args.jobs},
     )
     discovered: list[Mutant] = []
@@ -767,6 +860,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.max_mutants:
         discovered = discovered[: args.max_mutants]
+
+    discovered = _apply_shard(discovered, args.shard_index, args.shard_total)
 
     rep.total = len(discovered)
     if not args.quiet:
@@ -829,6 +924,7 @@ def main(argv: list[str] | None = None) -> int:
                                 f"{executed.original}->{executed.mutated} [{executed.mutator}]"
                             )
                             print(f"[{idx}/{len(pending)}] {tag} ... {executed.status} ({executed.durationMs}ms)")
+                        executed.run["reproCommand"] = mutation_repro_command(executed, repo, args.build_cmd, args.test_cmd, args.report)
                         rep.mutants.append(asdict(executed))
                         _write_report(args.report, rep, output_mode=output_mode)
             else:
@@ -856,6 +952,7 @@ def main(argv: list[str] | None = None) -> int:
                         rep.buildError += 1
                     elif executed.status == "TIMEOUT":
                         rep.timeouts += 1
+                    executed.run["reproCommand"] = mutation_repro_command(executed, repo, args.build_cmd, args.test_cmd, args.report)
                     rep.mutants.append(asdict(executed))
                     _write_report(args.report, rep, output_mode=output_mode)
     finally:
