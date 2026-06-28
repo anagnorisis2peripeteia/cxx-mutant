@@ -72,6 +72,11 @@ marmorkrebs --dir . --tool cxx-source --base origin/main \
 `cxx-mutant.report.v1` projection in compatibility mode (used by Marmorkrebs
 parser already).
 
+`--format mutation-testing-elements` emits a Stryker-style, machine-readable report
+with per-file source and mutant entries suitable for `stryker-cxx` integration.
+This format includes mutator descriptions, status mapping (`Killed`/`Survived`/etc.),
+location spans, and a reproducible `runCommand` per mutant.
+
 ## Commands
 
 - `run` — discover mutants, execute build/test, and write report
@@ -92,6 +97,16 @@ cxx-mutant run \
   --report results/mutation.json \
   --format markdown
 ```
+
+## Related repos
+
+- [`stryker-cxx`](../stryker-cxx): host/provider adapter that consumes
+  `mutation-testing-elements` payloads and adds a Stryker-oriented orchestration
+  seam on top of `cxx-mutant`.
+
+## Verification
+
+- Contract checks: `python3 -m unittest discover -s tests -p "test_*.py"`
 
 ### Design notes
 

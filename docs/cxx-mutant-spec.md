@@ -2,61 +2,77 @@
 
 ## Purpose
 
-`cxx-mutant` is a standalone source-level mutation tester for C, C++, Objective-C++, and optionally Metal shader sources.
+`cxx-mutant` is the independent C/C++/ObjC++/Metal mutation engine for PR-sized mutation
+quality gates. It must remain lightweight and callable from existing CI while exposing a
+Stryker-style reporting seam (`mutation-testing-elements` v2.0) so downstream tooling
+can build full mutation dashboards without engine rewrites.
 
-It should graduate the current Marmorkrebs embedded `cxx-source` engine into an independent tool with a stable CLI, reports, configuration, and release story. Marmorkrebs should then treat it like other mutation tools: an external engine with a parser/adapter, not a private implementation detail.
+The end goal is a **Stryker-grade external provider**: deterministic mutant discovery,
+reliable per-mutant execution, stable IDs/reproducers, and stable contracts for humans,
+CI, and host integrations.
 
-The tool is intended for PR-sized mutation gates where the caller supplies the build and test commands. It recompiles per mutant, which makes it suitable for projects that do not expose a single self-contained test binary and where LLVM-bitcode mutation tools are awkward to integrate.
+## Definition of completion (Stryker-level target)
+
+The spec is complete when all statements below are true in docs, implementation, and consumer
+surfaces:
+
+1. The engine is stable as a CLI tool independent from Marmorkrebs internals.
+2. Mutant discovery and execution are deterministic and reproducible from explicit inputs.
+3. Machine contracts are versioned, complete, and schema-stable.
+4. Mutation payloads can be consumed by a `stryker-cxx`-style host without format shims.
+5. The repo has a production-quality command contract for run/listing/replay.
+6. CI-friendly failure handling exists for build failures, timeouts, and infra errors.
+7. A migration path from embedded Marmorkrebs output remains intact.
 
 ## Current implementation status (2026-06-29)
 
-- [x] Extracted engine into standalone CLI package with stable `run`, `list-mutants`, `run-mutant`.
+- [x] Extracted engine into standalone package with `run`, `list-mutants`, `run-mutant`.
 - [x] Stable mutant IDs and deterministic token-mode discovery.
 - [x] Config files (`cxx-mutant.yml` / `.cxx-mutant.yml`) for paths, mutators, execution, and report settings.
-- [x] Resume (`--resume`), `--fail-on-empty`, and human-readable report output formats.
+- [x] Resume (`--resume`), `--fail-on-empty`, and machine-readable output formats.
 - [x] Inplace dirty-tree guard with `--allow-dirty`.
-- [x] `--mode clang` AST-backed implementation with libclang-backed fallback/validation.
+- [x] `--mode token|clang` with parse-backed discovery and `compile_commands.json` support.
 - [x] Isolated `git-worktree` and `copy` execution modes.
-- [x] Parallel execution (`--jobs` > 1) for isolated workspace modes.
-- [x] Clang compile-command loading and AST node kind recording in reports.
-- [x] Expanded mutator catalog: `AssignmentOperator`, `BitwiseOperator`, `UnaryOperator`, `ReturnValue`.
-- [x] Repro-command capture on mutant runs (`reproCommand`) and persisted build/test command metadata.
-- [x] Sharded execution via `--shard-index` / `--shard-total`.
+- [x] Parallel execution (`--jobs` > 1) in isolated modes.
+- [x] Repro-command capture on every executed mutant (`reproCommand`).
+- [x] `mutation-testing-elements` projection (`schemaVersion: 2.0`) with:
+  - stable `location.start`/`location.end`
+  - Stryker-like statuses and `TimedOut`
+  - mutator `description` and `runCommand`
+  - `projectRoot`, `language` fields.
+- [x] Basic Stryker migration docs and Marmorkrebs compatibility.
+- [ ] Full Stryker parity: test-runner integration, selector/runner orchestration, mutation operators parity,
+  equivalent-mutant filtering, richer skip/ignore controls.
 
-## Non-goals
+## Scope and non-goals
 
-`cxx-mutant` is not trying to replace full compiler-integrated mutation systems on day one.
+`cxx-mutant` is an operator, not a full compiler integration platform. Initial
+non-goals stay in place so Stryker parity lands incrementally without overcommitting:
 
-Initial non-goals:
+- Not a full LLVM-IR mutation engine on day one.
+- No built-in test-sharding/scheduler beyond simple file/mutant partitioning.
+- No implicit claims of semantic equivalence from survivors.
+- No mutation of macros/generated files/vendored trees unless explicitly enabled.
+- No hidden coupling with Marmorkrebs command objects or runtime internals.
 
-- No requirement for whole-program LLVM instrumentation.
-- No automatic test selection beyond changed-line and file scoping.
-- No claim that all survivors are non-equivalent.
-- No mutation of macros, generated files, vendored code, or shader files unless explicitly enabled.
-- No hidden dependency on Marmorkrebs.
+## Baseline behavior inheritance from Marmorkrebs
 
-## Current embedded engine baseline
+The original embedded behavior is still the compatibility floor:
 
-The current Marmorkrebs engine already provides the seed implementation:
+- Diff-scoped discovery against `git diff --unified=0 <base>`.
+- Caller-controlled source paths and line scoping.
+- One-mutant-at-a-time execution.
+- Build command and test command run on each mutant.
+- Native statuses: `KILLED`, `SURVIVED`, `BUILD_ERROR`, `TIMEOUT`, `PENDING`.
 
-- Discovers changed lines via `git diff --unified=0 <base>`.
-- Restricts to caller-provided files and optional line ranges.
-- Generates token-level mutants while skipping comments and string/character literals.
-- Applies one source mutation at a time.
-- Runs caller-supplied build and test commands.
-- Classifies mutants as `KILLED`, `SURVIVED`, or `BUILD_ERROR`.
-- Emits JSON with target files, totals, score, and per-mutant records.
-- Supports `--max-mutants`, `--include-metal`, and `--mutators`.
+These behaviors must stay stable while higher-level contracts harden.
 
-That behavior should remain available as the first standalone implementation.
+## CLI contract (authoritative)
 
-## CLI contract
-
-The first release should expose a small stable command surface.
+The public contract for each command is below. All flags in examples can be overridden via
+config, and CLI options always win.
 
 ### `run`
-
-Run mutation testing and emit a report.
 
 ```bash
 cxx-mutant run \
@@ -65,52 +81,56 @@ cxx-mutant run \
   --base origin/main \
   --build-command "ninja -C build target" \
   --test-command "./build/bin/target_test" \
-  --report mutation.json
+  --report results/mutation.json
 ```
 
-Required options:
+Required:
 
-- `--repo <path>`: repository root.
-- `--files <paths>`: comma-separated repo-relative source paths.
-- `--build-command <cmd>`: command that rebuilds the mutated artifact.
-- `--test-command <cmd>`: command whose non-zero exit kills a mutant.
+- `--repo <path>`: repo root to mutate and execute commands.
+- `--files <paths>`: comma-separated repo-relative files to target.
+- `--build-command <cmd>` and `--test-command <cmd>`: executable commands for build and test.
 
-Scoping options:
+Scoping:
 
-- `--base <ref>`: restrict to changed lines versus a git ref.
-- `--lines <ranges>`: further restrict to line ranges such as `10-20,40`.
-- `--include <glob>`: include source paths matching a glob.
-- `--exclude <glob>`: exclude source paths matching a glob.
+- `--base <ref>`: only changed lines versus a git ref.
+- `--lines <ranges>`: manual line filters (`10-20,40`).
+- `--include <glob>`, `--exclude <glob>`: include/exclude file patterns.
 
-Mutation options:
+Mutation and mode:
 
-- `--mutators <names>`: comma-separated mutator list.
-- `--max-mutants <n>`: cap generated mutants.
-- `--include-metal`: include `.metal` files in token-level mode.
-- `--mode token|clang`: choose mutation implementation, default `token` initially.
+- `--mutators <names>`: comma-separated mutator names.
+- `--max-mutants <n>`: cap total run candidate count.
+- `--include-metal`: include `.metal` when token-mode is selected.
+- `--mode token|clang`: discovery path (`token` default).
 
-Execution options:
+Execution controls:
 
-- `--timeout <seconds>`: per-mutant timeout.
-- `--jobs <n>`: parallel mutant workers (requires `--worktree-mode copy` or `git-worktree`).
-- `--shard-index <i> --shard-total <n>`: deterministically partition mutants across runners.
-- `--worktree-mode inplace|git-worktree|copy`: default `inplace` for compatibility, safer modes for isolated mutation execution.
-- `--resume <report>`: skip completed mutants from a prior report.
+- `--timeout <seconds>`: per-mutant timeout (applies to build and test commands).
+- `--jobs <n>`: enable parallel execution in `copy`/`git-worktree` modes.
+- `--worktree-mode inplace|git-worktree|copy`:
+  - `inplace` for compatibility,
+  - isolated modes for parallelism.
+- `--shard-index <i> --shard-total <n>`: partition mutant set deterministically.
+- `--resume <report>`: continue from completed mutants in prior report.
+- `--artifact-dir <path>`: custom artifact root for build/test logs.
+- `--allow-dirty`: explicit allow-override of dirty-file guard.
 
-Status notes:
+Output:
 
-- `--jobs` now executes mutants in parallel when using `copy`/`git-worktree`; `inplace` rejects `--jobs > 1` to avoid races.
-- `git-worktree` and `copy` execute mutants in isolated worktrees/copies.
+- `--report <path>`: primary report path (JSON payload).
+- `--format json|markdown|html|sarif|mutation-testing-elements`:
+  - `json` writes `cxx-mutant.report.v1`.
+  - `mutation-testing-elements` writes MTE-only payload in `mutationTestingElements` shape.
+- `--output-format legacy|cxx-mutant`: legacy compatibility projection vs native schema.
+- `--quiet`: suppress progress chatter.
 
-Report options:
+Behavioral invariants:
 
-- `--report <path>`: JSON report path.
-- `--format json|markdown|html|sarif|mutation-testing-elements`: output format for stdout or generated report.
-- `--quiet`: write only report output to stdout.
+- `--jobs > 1` is invalid in `inplace` mode.
+- Non-zero build/test outcomes are recorded as mutant-level infrastructure statuses and do not hide
+  build errors from score calculations.
 
 ### `list-mutants`
-
-Discover mutants without running build/test commands.
 
 ```bash
 cxx-mutant list-mutants \
@@ -120,46 +140,40 @@ cxx-mutant list-mutants \
   --format json
 ```
 
-This supports fast review of mutation scope and stable mutant IDs before a long run.
+This returns a deterministic mutant inventory with stable IDs but does not run build/test.
+
+List payload requirements:
+
+- JSON array of objects with at least:
+  - `id`, `file`, `line`, `column`, `mutator`, `original`, `mutated`.
+- `nodeKind` and `mode` may be included for implementation detail.
 
 ### `run-mutant`
-
-Run one mutant by stable ID.
 
 ```bash
 cxx-mutant run-mutant \
   --repo . \
-  --id src/foo.cpp:42:17:EqualityOperator:sha256... \
+  --id src/foo.cpp:42:17:EqualityOperator:abc123 \
   --build-command "ninja -C build target" \
-  --test-command "./build/bin/target_test"
+  --test-command "./build/bin/target_test" \
+  --report results/one_mutant.json
 ```
 
-This is useful for reproducing a survivor locally.
+Single-mutant execution must resolve the mutant by stable ID from the same discovery rules
+as `run` with the same inputs.
 
-## Exit codes
+## Exit codes (required)
 
-Exit codes must be stable and CI-friendly.
+- `0`: run completed and met threshold.
+- `1`: configuration/runtime fault.
+- `2`: run completed, but quality threshold unmet.
+- `3`: zero mutants and `--fail-on-empty` enabled.
 
-- `0`: mutation run completed and met the configured threshold.
-- `1`: infrastructure or usage error.
-- `2`: run completed but did not meet threshold, including surviving mutants.
-- `3`: no mutants generated, when `--fail-on-empty` is enabled.
+All commands should preserve non-zero codes and print machine-parseable context in debug logs.
 
-Marmorkrebs can map these into its existing gate semantics.
+## Contracts and schemas
 
-## Report schema
-
-The JSON report should be stable and versioned.
-
-The embedded Marmorkrebs engine now uses this as the compatibility direction:
-emit a `cxx-mutant.report.v1` wrapper while preserving legacy Marmorkrebs fields
-until the standalone tool exists. That lets Marmorkrebs consume old reports and
-new standalone-style reports through the same adapter.
-
-Default behavior for the embedded engine remains legacy-only for backward compatibility.
-The new `cxx-mutant` projection is explicit via `--output-format cxx-mutant`.
-Marmorkrebs keeps that contract stable by leaving old report consumers untouched
-unless the optional format switch is selected.
+### `cxx-mutant.report.v1` (canonical)
 
 ```json
 {
@@ -176,6 +190,8 @@ unless the optional format switch is selected.
   "survived": 1,
   "buildErrors": 0,
   "timeouts": 0,
+  "execution": { "mode": "token", "worktreeMode": "copy", "jobs": 2 },
+  "commands": { "build": "ninja -C build target", "test": "./build/bin/target_test" },
   "mutants": [
     {
       "id": "src/foo.cpp:42:17:EqualityOperator:abc123",
@@ -189,133 +205,155 @@ unless the optional format switch is selected.
       "durationMs": 1200,
       "buildLog": "agent_space/cxx-mutant/build_1.log",
       "testLog": "agent_space/cxx-mutant/test_1.log",
-      "detail": "all targeted tests passed"
+      "detail": "all targeted tests passed",
+      "nodeKind": "",
+      "run": {
+        "reproCommand": "cxx-mutant run-mutant ..."
+      }
     }
   ]
 }
 ```
 
-Required compatibility notes:
+Compatibility notes:
 
-- Scores should be `0.0` to `1.0` in standalone reports.
-- The Marmorkrebs adapter can normalize older embedded reports that use percentages.
-- `totalMutants: 0` should be explicit so callers can distinguish vacuous proof from strong evidence.
-- Build errors should not silently improve the score; they should be counted separately.
+- Scores are `0.0..1.0`.
+- `totalMutants: 0` must always be emitted explicitly.
+- `buildErrors` and `timeouts` are separate counters and do not raise score implicitly.
+- `legacy` compatibility fields may exist for backwards compatibility but are secondary.
 
-## Stryker compatibility seam
+### Stryker-compatible projection (`mutation-testing-elements`)
 
-`cxx-mutant` should integrate with the Stryker ecosystem through
-`mutation-testing-elements`, not by depending on StrykerJS or Stryker.NET
-internals.
+`cxx-mutant` must emit this projection when `--format mutation-testing-elements` is requested:
 
-The first compatibility layer should be report-level:
+- Top-level keys:
+  - `mutationTestingElements.schemaVersion = "2.0"`
+  - `mutationTestingElements.files`
+  - `mutationTestingElements.testFiles`
+  - `mutationTestingElements.language = "cpp"`
+  - `mutationTestingElements.projectRoot`
+- Per mutant payload:
+  - `id`, `mutatorName`, `description`, `original`, `replacement`
+  - `status` in Stryker domain (`Killed|Survived|CompileError|TimedOut|Pending|RuntimeError`)
+  - `statusReason`, `nodeKind`, `runCommand`
+  - `location.start` / `location.end`
 
-- Keep Stryker-style mutator names where the concepts match.
-- Emit stable mutant IDs.
-- Emit Stryker-style statuses in a report projection: `Killed`, `Survived`,
-  `CompileError`, `Pending`, and infrastructure error statuses where needed.
-- Preserve source locations as start/end line and column ranges.
-- Include source text per file when generating the report projection.
-- Keep the native `cxx-mutant.report.v1` schema as the authoritative contract,
-  then project into `mutation-testing-elements` for Stryker viewers and future
-  upstream discussion.
+Status mapping from engine statuses:
 
-This avoids pretending the tool is already a Stryker implementation while still
-making future adoption plausible. A later `stryker-cxx` proposal can be about a
-working C++ provider that already speaks the reporting vocabulary used by
-Stryker tooling.
+- `KILLED` -> `Killed`
+- `SURVIVED` -> `Survived`
+- `BUILD_ERROR` -> `CompileError`
+- `TIMEOUT` -> `TimedOut`
+- `PENDING` -> `Pending`
+- all other statuses -> `RuntimeError`
 
-## Mutator set
+This is the contract that a dedicated host such as a future `stryker-cxx` package should
+consume directly.
 
-Initial mutators should match the embedded engine:
+## Core feature requirements for Stryker-level acceptance
 
-- `ConditionalBoundary`: `<` `<=' `>` `>=` boundary changes.
-- `EqualityOperator`: `==` and `!=` swaps.
-- `LogicalOperator`: `&&` and `||` swaps.
-- `BooleanLiteral`: `true` and `false` swaps.
-- `ArithmeticOperator`: `+` `-` `*` `/` swaps.
-- `AssignmentOperator`: `+=` `-=` `*=` `/=` swaps.
-- `BitwiseOperator`: `&` `|` `^` swaps.
-- `UnaryOperator`: `!` removal and duplication.
-- `ReturnValue`: `return true` / `return false` swaps.
+To justify “Stryker-level” claims, the project must satisfy these core requirements:
 
-Near-term additions:
+- Determinism
+  - Stable mutant ordering.
+  - Stable mutant IDs across identical inputs.
+  - Stable output ordering for humans and consumers.
+- Reproducibility
+  - `reproCommand` must exist for each executed mutant.
+  - Report payload must include build/test command context.
+- Report compatibility
+  - v1 payload and MTE projection both present and parseable.
+  - `language`, `projectRoot`, and source spans are always populated when possible.
+- Isolation controls
+  - Safe isolated execution modes and explicit no-destructive cleanup.
+  - Resume semantics for interrupted runs.
+- Governance
+  - Config-driven defaults with CLI overrides.
+  - Documented non-goals and supported mutator set.
 
-- `UnaryOperator`: remove or add `!` where syntactically safe.
-- `ReturnValue`: mutate simple boolean/integer return constants.
-- `AssignmentOperator`: selected `+=`, `-=`, `*=`, `/=` changes.
-- `BitwiseOperator`: `&`, `|`, `^` swaps where AST context proves they are operators.
-- `CallRemoval`: replace selected side-effect-free predicate/helper calls only when configured.
+## Mutator set and semantics
 
-Default mutators should bias toward branch and dispatch logic, not broad arithmetic. Arithmetic creates too many equivalent or noisy mutants in pointer/indexing code.
+Built-in mutators:
 
-## Source analysis modes
+- `ConditionalBoundary`: boundary flips (`<` <-> `<=`, `>` <-> `>=`).
+- `EqualityOperator`: `==` <-> `!=`.
+- `LogicalOperator`: `&&` <-> `||`.
+- `BooleanLiteral`: `true` <-> `false`.
+- `ArithmeticOperator`: `+ - * /` swaps.
+- `AssignmentOperator`: `+= -= *= /=` swaps.
+- `BitwiseOperator`: `& | ^` swaps.
+- `UnaryOperator`: `!` removal/addition.
+- `ReturnValue`: `return true` <-> `return false`.
 
-### Token mode
+Default production profile:
 
-Token mode is the compatibility path. It should remain simple, fast, and dependency-light.
+- `ConditionalBoundary,EqualityOperator,LogicalOperator,BooleanLiteral`
+
+Extension policy:
+
+- No opt-in mutator is allowed without explicit default/opt-in documentation.
+- AST-derived mutator additions should include equivalent risk/benefit notes and
+  acceptance tests.
+
+## Discovery modes and AST trust boundary
+
+### Token mode (baseline)
 
 Requirements:
 
-- Skip comments, string literals, and character literals.
-- Avoid template brackets and common C++ punctuation traps.
-- Avoid includes and preprocessor lines by default.
-- Keep deterministic mutant ordering.
-- Support `.cpp`, `.cc`, `.cxx`, `.c`, `.mm`, `.m`, `.h`, `.hpp`, `.hh`, `.hxx`, and optional `.metal`.
+- Ignore comments and string/character literals.
+- Keep deterministic traversal.
+- Default include list handles C-family extensions (`.cpp`, `.cc`, `.cxx`, `.c`, `.mm`, `.m`, `.h`, `.hpp`, `.hh`, `.hxx`).
+- `.metal` gated by `--include-metal`.
+- No template or punctuation false-positives from common token edge cases.
+- Exclusion of include/preprocessor lines by default where feasible.
 
-### Clang-aware mode
-
-Clang-aware mode is the path toward Stryker/gomu-level trustworthiness.
+### Clang mode (roadmap target)
 
 Requirements:
 
-- Use compile commands from `compile_commands.json` when available.
-- Mutate AST-confirmed expressions rather than raw token matches.
-- Preserve formatting enough that diagnostics remain useful.
-- Avoid macro expansions unless explicitly enabled.
-- Record AST node kind in the mutant record.
+- Resolve compile options from `compile_commands.json` when available.
+- Prefer AST-token confirmation for discovered mutations.
+- Record token/AST context (`nodeKind`) in mutant records.
+- Avoid macro expansion by default.
 
-Implementation options:
+Current status: operator token discovery in clang mode is implemented with libclang-backed discovery.
 
-- Python `libclang` bindings for continuity with the current engine.
-- A small C++/LLVM binary if Python bindings become too brittle.
-- Tree-sitter as an intermediate parser for lighter-weight structural filtering, but not as the final semantic authority.
+## Execution model, status mapping, and safety
 
-Current status: `--mode clang` requires libclang bindings and currently discovers confirmed operator tokens via clang tokens.
+Per mutant:
 
-## Workspace safety
+1. Apply one mutation.
+2. Run build command.
+3. If build succeeds, run test command.
+4. Restore original source.
 
-The embedded engine currently mutates files in place and restores them, then uses `git checkout -- <path>` as a final cleanup. A standalone tool needs safer modes.
+Status resolution:
 
-Required phases:
+- build command timeout -> `TIMEOUT`.
+- build command non-zero exit -> `BUILD_ERROR`.
+- test command timeout -> `TIMEOUT`.
+- test command non-zero -> `KILLED`.
+- test command zero -> `SURVIVED`.
 
-1. Keep `inplace` mode for compatibility.
-2. Add `git-worktree` mode to run each mutant or shard in an isolated worktree.
-3. Add resume support so interrupted runs do not require starting over.
-4. Avoid destructive cleanup of files not owned by the run.
+Workspace behavior:
 
-Safety rules:
+- `inplace`: mutates in place and restores with tracked-file cleanup guard.
+- `git-worktree`/`copy`: per-mutant isolated work directories.
+- Logs are written under `artifact-dir` or `agent_space/cxx-mutant`.
+- `--resume` skips completed mutant IDs from a prior report.
 
-- Refuse to run in `inplace` mode on a dirty target file unless `--allow-dirty` is set.
-- Never reset unrelated files.
-- Write all logs under a configurable artifact directory.
-- Emit enough cleanup metadata to recover after interruption.
+## Configuration schema
 
-Current status: `git-worktree` and `copy` modes are now implemented for isolated per-mutant runs. Inplace mode still enforces dirty-tree guard and preserves existing cleanup behavior. Sharding is also implemented, applied after `--max-mutants` and `--run-mutant-id` filtering so shards are deterministic and non-overlapping.
-- Discovery now strips line/block comments and string/char literals before token matching (including block comment spans) to reduce false-positive mutants.
-- `mutation-testing-elements` is supported as a direct `--format` output target for Stryker-oriented tooling.
-
-## Configuration file
-
-Support `cxx-mutant.yml` at the repo root.
+`cxx-mutant.yml` / `.cxx-mutant.yml` supports:
 
 ```yaml
 schemaVersion: cxx-mutant.config.v1
 base: origin/main
 files:
   include:
-    - "aten/src/**/*.mm"
     - "aten/src/**/*.cpp"
+    - "aten/src/**/*.mm"
   exclude:
     - "**/generated/**"
 mutators:
@@ -328,59 +366,47 @@ execution:
   buildCommand: "ninja -C build target"
   testCommand: "python test/run_test.py test_mps --keep-going"
   timeoutSeconds: 300
-  maxMutants: 50
-  worktreeMode: inplace
+  jobs: 2
+  worktreeMode: copy
+  mode: clang
+  sharded:
+    index: 1
+    total: 4
 report:
   threshold: 0.6
   failOnEmpty: false
   artifactDir: agent_space/cxx-mutant
 ```
 
-CLI flags should override config values.
+Rules:
 
-## Reports for humans
+- CLI args always override config.
+- `files` string shorthand and `files.include`/`files.exclude` are both accepted.
+- Unknown configuration keys should be ignored with warning, not hard-fail.
 
-The JSON report is the canonical machine contract. The tool should also generate human reports.
+## Human-readable reporting
 
-Markdown report should include:
+JSON is canonical; markdown/html/sarif are secondary views:
 
-- Summary table.
-- Score and threshold.
-- Changed files targeted.
-- Survivor list with file/line/mutator/before/after.
-- Build errors and timeout list.
-- Exact build/test commands.
-- Reproduction command for each survivor.
+- Markdown summary includes score, thresholds, mutators, survivors, build/error counts, commands.
+- HTML/SARIF are useful transport contracts and can be added/extended incrementally.
 
-HTML can come later and should be generated from the same report schema.
+## Marmorkrebs contract
 
-SARIF can come later for GitHub code-scanning integration.
+Keep this adapter contract stable:
 
-## Marmorkrebs integration
+- `marmorkrebs` continues to invoke external provider when configured.
+- Legacy behavior remains functional via `--output-format legacy`.
+- Mapping is currently:
+  - `totalMutants` -> `MutationResult.totalMutants`
+  - `killed` -> `MutationResult.killed`
+  - `survived` -> `MutationResult.survived`
+  - `buildErrors` -> `MutationResult.noCoverage`
+  - `timeouts` -> `MutationResult.timeout`
+  - `score` -> `MutationResult.score`
+  - `surviving mutants` -> `MutationResult.survivingMutants`
 
-Marmorkrebs should remain the language-agnostic orchestrator. `cxx-mutant` should become the C/C++ provider.
-
-Adapter plan:
-
-1. Add a Marmorkrebs config option or discovery path for external `cxx-mutant`.
-2. If installed, run `cxx-mutant run` and parse `cxx-mutant.report.v1`.
-3. If not installed, fall back to the bundled embedded engine for compatibility.
-4. Preserve current Marmorkrebs CLI flags: `--max-mutants`, `--include-metal`, and `--mutators`.
-5. Eventually remove the bundled fallback once the standalone tool is stable and packaged.
-
-Current status: step 1 is implemented via `--cxx-mutant-bin` (or `CXX_MUTANT_BIN`) on the existing `marmorkrebs --tool cxx-source` path, and `cxx-mutant` output is already accepted by the parser.
-
-Marmorkrebs result mapping:
-
-- `totalMutants` -> `MutationResult.totalMutants`
-- `killed` -> `MutationResult.killed`
-- `survived` -> `MutationResult.survived`
-- `buildErrors` -> `MutationResult.noCoverage`
-- `timeouts` -> `MutationResult.timeout`
-- `score` -> `MutationResult.score`
-- surviving mutants -> `MutationResult.survivingMutants`
-
-## First repository layout
+## Repository layout (current + planned)
 
 ```text
 cxx-mutant/
@@ -391,80 +417,71 @@ cxx-mutant/
     __init__.py
     cli.py
     engine.py
-  tests/
-    fixtures/
-    test_discover.py
-    test_mutate_restore.py
-    test_report_schema.py
-    test_cli.py
   docs/
     cxx-mutant-spec.md
     migration-from-marmorkrebs.md
     stryker-integration.md
     mutators.md
-  examples/
-    minimal/
-    cmake/
-    pytorch-mps/
 ```
 
-Python is the lowest-friction first packaging route because the current engine is Python and the tool will often be invoked from heterogeneous repos. A later Rust or C++ rewrite is only justified if parallelism, parsing, or packaging becomes painful.
+Planned additions for full Stryker-level parity:
+
+- Dedicated acceptance tests for discovery/restore/report contracts.
+- Negative/edge fixtures for parser and timeout behavior.
+- CI workflow, package publication metadata, and plugin compatibility examples.
 
 ## Milestones
 
-### M0: extraction without behavior change
+### M0: extraction without behavior regression
 
-- Move the embedded Python engine into a standalone repo.
-- Keep token-level mutation behavior equivalent.
-- Add CLI tests for report generation and exit codes.
-- Add docs for local PR-gate use.
-- Update Marmorkrebs to call the external tool when present.
+- External packaging + stable entrypoint.
+- Baseline token-mode parity with historical behavior.
+- Marmorkrebs compatibility path preserved.
 
-### M1: product-quality CLI
+### M1: production CLI
 
-- Add `list-mutants` and `run-mutant`.
-- Add stable mutant IDs.
-- Add config file support.
-- Add markdown report generation.
-- Add dirty-tree checks and safer artifact handling.
+- `list-mutants`, `run-mutant` and resume.
+- Deterministic IDs and command-level reproducibility.
+- `--format mutation-testing-elements` projection available.
 
-### M2: safer execution
+### M2: isolation and safety
 
-- Add timeout handling.
-- Add resume from report.
-- Add isolated worktree mode.
-- Add and implement sharding.
+- `git-worktree`/`copy` support.
+- Artifact-root logging and dirty-tree safety.
+- Sharding and thresholded exits.
 
-### M3: clang-aware mutation
+### M3: structural trust
 
-- Harden `--mode clang` behavior on parse failures and missing dependencies.
-- Read `compile_commands.json`.
-- Generate AST-confirmed mutants for core operators.
-- Compare token-mode and clang-mode output on known fixtures.
+- Hardened clang mode with compile-database fallbacks.
+- AST node kind metadata.
+- Stable location precision suitable for MTE consumers.
 
-### M4: CI and ecosystem parity
+### M4: stryker ecosystem parity
 
-- Publish installable package.
-- Add GitHub Actions examples.
-- Add SARIF or annotation output.
-- Add threshold policy docs.
-- Add equivalent-mutant annotation flow.
+- Full host-ready payload stability for a future `stryker-cxx` package.
+- Repro-command and source mapping completeness.
+- Clear equivalent-mutant policy and reporting of infra states.
 
-## Acceptance criteria for independence
+### M5: CI-grade hardening
 
-The standalone tool is ready to be treated as independent when:
+- Repository-level CI and release pipeline.
+- Automated schema validation for `cxx-mutant.report.v1` and MTE payload.
+- Plugin/adapter integration proof across at least one external repo.
 
-- It can run outside Marmorkrebs with only documented CLI/config inputs.
-- It has tests for discovery, mutation application, restoration, report schema, and exit codes.
-- Marmorkrebs can use it as an external provider.
-- A real C++/ObjC++ repo can run it from a clean checkout and get a deterministic JSON report.
-- A survivor can be reproduced with a single `run-mutant` command.
-- An interrupted run leaves the target repo recoverable and reports what happened.
+## Acceptance criteria for independent release
 
-## Open decisions
+The repo is treated as independent when all checks are demonstrably true:
 
-- Repository name: `cxx-mutant` (selected).
-- Initial license.
-- Whether Metal support remains token-only or gets its own shader-aware mode.
-- Whether thresholding belongs in `cxx-mutant`, Marmorkrebs, or both.
-- Whether clang-aware mode should be Python/libclang or a compiled helper binary.
+- Executes standalone from CLI + config on a clean checkout.
+- Emits both canonical report and MTE projection.
+- Deterministic replay via `run-mutant`.
+- Resume and shard semantics are deterministic and documented.
+- `timeout`, `build_error`, `killed`, `survived`, and `time out` are observable in all reports.
+- A future `stryker-cxx` host can consume projection without custom schema transforms.
+
+## Open questions
+
+- Do we add a dedicated shader-specific mode (`--mode metal`) or keep token-mode default.
+- How much AST-context filtering is needed before enabling heavier mutator families.
+- Whether artifact upload/report formats should include a per-mutant git patch diff.
+- Where to place threshold policy when both adapter and tool are in play.

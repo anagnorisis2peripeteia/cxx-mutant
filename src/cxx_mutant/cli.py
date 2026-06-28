@@ -205,7 +205,7 @@ def _resolve_defaults(args: argparse.Namespace) -> dict[str, Any]:
         "output_format": (
             args.output_format
             if hasattr(args, "output_format") and args.output_format is not None
-            else execution.get("outputFormat", "legacy" if args.command == "run" else "cxx-mutant")
+            else execution.get("outputFormat", "cxx-mutant")
         ),
         "report": args.report if hasattr(args, "report") else None,
         "shard_index": args.shard_index if hasattr(args, "shard_index") else None,

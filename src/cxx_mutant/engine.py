@@ -25,6 +25,13 @@ from datetime import datetime, timezone
 import time
 from typing import Any
 
+from .schema import (
+    REPORT_SCHEMA_VERSION,
+    MTE_SCHEMA_VERSION,
+    require_mte,
+    require_report,
+)
+
 # Token-level mutators.
 MUTATORS: dict[str, list[tuple[str, str]]] = {
     "ConditionalBoundary": [("<=", "<"), (">=", ">"), ("<", "<="), (">", ">=")],
@@ -36,6 +43,18 @@ MUTATORS: dict[str, list[tuple[str, str]]] = {
     "BitwiseOperator": [("&", "|"), ("|", "&"), ("^", "|")],
     "UnaryOperator": [("!", ""), ("!", "!!")],
     "ReturnValue": [("return true", "return false"), ("return false", "return true")],
+}
+
+MUTATOR_DESCRIPTIONS: dict[str, str] = {
+    "ConditionalBoundary": "replaced conditional boundary operator",
+    "EqualityOperator": "replaced equality operator",
+    "LogicalOperator": "replaced boolean short-circuit operator",
+    "BooleanLiteral": "swapped boolean literal",
+    "ArithmeticOperator": "replaced arithmetic operator",
+    "AssignmentOperator": "replaced compound assignment operator",
+    "BitwiseOperator": "replaced bitwise operator",
+    "UnaryOperator": "modified unary operator",
+    "ReturnValue": "reversed returned boolean result",
 }
 
 _TOKEN_PATTERNS: dict[str, str] = {
@@ -521,6 +540,21 @@ def _safe_basename(text: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", text)
 
 
+def _normalize_mutant_record(mut: dict[str, Any] | Mutant) -> dict[str, Any]:
+    rec = dict(mut.__dict__ if isinstance(mut, Mutant) else mut)
+    if "col" in rec and "column" not in rec:
+        rec["column"] = rec["col"]
+    if "column" in rec and "col" not in rec:
+        rec["col"] = rec["column"]
+    if "line" not in rec or not isinstance(rec["line"], int):
+        rec["line"] = 0
+    if "column" in rec and not isinstance(rec["column"], int):
+        rec["column"] = 0
+    if "col" in rec and not isinstance(rec["col"], int):
+        rec["col"] = 0
+    return rec
+
+
 def _apply_shard(mutants: list[Mutant], shard_index: int | None, shard_total: int | None) -> list[Mutant]:
     if not mutants:
         return mutants
@@ -539,6 +573,7 @@ def _write_report(path: str, rep: Report, output_mode: str = "legacy") -> None:
     else:
         payload = _legacy_report(rep)
 
+    require_report(payload) if output_mode == "cxx-mutant" else None
     with open(path, "w") as f:
         json.dump(payload, f, indent=2)
 
@@ -557,8 +592,9 @@ def _legacy_report(rep: Report) -> dict:
 
 def _report_dict(rep: Report, repo: str | None = None, base: str | None = None,
                  threshold: float | None = None, startedAt: str | None = None) -> dict:
+    normalized_mutants = [_normalize_mutant_record(mut) for mut in rep.mutants]
     return {
-        "schemaVersion": "cxx-mutant.report.v1",
+        "schemaVersion": REPORT_SCHEMA_VERSION,
         "tool": rep.tool,
         "repo": repo or rep.repo,
         "base": base or rep.base,
@@ -581,7 +617,7 @@ def _report_dict(rep: Report, repo: str | None = None, base: str | None = None,
             "test": rep.testCommand,
         },
         "mutationTestingElements": _mutation_testing_elements(rep),
-        "mutants": rep.mutants,
+        "mutants": normalized_mutants,
         "targetFiles": rep.target_files,
         # Legacy compatibility fields for transition period.
         "scorePercent": rep.scorePercent,
@@ -606,12 +642,21 @@ def _mutation_testing_elements(rep: Report) -> dict:
                 source = ""
             files[file] = {"source": source, "mutants": []}
 
+    def _to_mte_column(col: int) -> int:
+        return max(0, col + 1)
+
+    def _to_mte_end(mut: dict[str, Any], start_col: int) -> int:
+        return max(start_col, start_col + max(len(mut.get("original", "")), 1))
+
     for idx, mut in enumerate(rep.mutants):
+        mut = _normalize_mutant_record(mut)
         file = mut["file"]
         files.setdefault(file, {"source": "", "mutants": []})
+        start_col = _to_mte_column(int(mut["col"]))
         files[file]["mutants"].append({
             "id": mut.get("id") or str(idx),
             "mutatorName": mut["mutator"],
+            "description": MUTATOR_DESCRIPTIONS.get(mut["mutator"], mut["mutator"]),
             "original": mut.get("original", ""),
             "replacement": mut["mutated"],
             "status": _mte_status(mut.get("status", "PENDING")),
@@ -619,18 +664,20 @@ def _mutation_testing_elements(rep: Report) -> dict:
             "nodeKind": mut.get("nodeKind", ""),
             "runCommand": mut.get("run", {}).get("reproCommand") if isinstance(mut.get("run"), dict) else None,
             "location": {
-                "start": {"line": mut["line"], "column": mut["col"]},
+                "start": {"line": mut["line"], "column": start_col},
                 "end": {
                     "line": mut["line"],
-                    "column": mut["col"] + len(mut["original"]),
+                    "column": _to_mte_end(mut, start_col),
                 },
             },
         })
 
     return {
-        "schemaVersion": "2.0",
+        "schemaVersion": MTE_SCHEMA_VERSION,
         "files": files,
         "testFiles": {},
+        "projectRoot": rep.repo,
+        "language": "cpp",
     }
 
 
@@ -751,6 +798,8 @@ def _write_human_artifact(path: str, report: str, payload: Any) -> str:
             out_path = path + ".html"
         elif report == "sarif":
             out_path = path + ".sarif"
+    if report == "json" and isinstance(payload, dict) and payload.get("schemaVersion") == "2.0":
+        require_mte(payload)
     with open(out_path, "w") as f:
         if report == "json":
             json.dump(payload, f, indent=2)
@@ -944,7 +993,7 @@ def main(argv: list[str] | None = None) -> int:
     pending: list[Mutant] = []
     for m in discovered:
         if m.id in resumed:
-            rep.mutants.append(resumed[m.id])
+            rep.mutants.append(_normalize_mutant_record(resumed[m.id]))
             status = str(resumed[m.id].get("status", "PENDING")).upper()
             if status == "KILLED":
                 rep.killed += 1
@@ -995,7 +1044,7 @@ def main(argv: list[str] | None = None) -> int:
                             )
                             print(f"[{idx}/{len(pending)}] {tag} ... {executed.status} ({executed.durationMs}ms)")
                         executed.run["reproCommand"] = mutation_repro_command(executed, repo, args.build_cmd, args.test_cmd, args.report)
-                        rep.mutants.append(asdict(executed))
+                        rep.mutants.append(_normalize_mutant_record(asdict(executed)))
                         _write_report(args.report, rep, output_mode=output_mode)
             else:
                 for idx, mut in enumerate(pending, 1):
@@ -1023,7 +1072,7 @@ def main(argv: list[str] | None = None) -> int:
                     elif executed.status == "TIMEOUT":
                         rep.timeouts += 1
                     executed.run["reproCommand"] = mutation_repro_command(executed, repo, args.build_cmd, args.test_cmd, args.report)
-                    rep.mutants.append(asdict(executed))
+                    rep.mutants.append(_normalize_mutant_record(asdict(executed)))
                     _write_report(args.report, rep, output_mode=output_mode)
     finally:
         if args.worktree_mode == "inplace":
