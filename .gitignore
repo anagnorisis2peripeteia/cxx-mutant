@@ -1,0 +1,15 @@
+agent_space/
+.venv/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.idea/
+.vscode/
+*.log
+
