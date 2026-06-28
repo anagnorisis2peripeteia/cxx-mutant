@@ -7,6 +7,7 @@ runner for C++ sources that emits a projection matching the same shape as
 ## What is projected today
 
 - `mutationTestingElements.schemaVersion = 2.0`
+- `cxx-mutant --format mutation-testing-elements` writes the projection directly for Stryker-style ingestion.
 - per-file sources and mutant entries in `files[file]["mutants"]`
 - status mapping:
   - `KILLED` -> `Killed`
@@ -25,4 +26,3 @@ This gives a stable bridge for:
 
 The Stryker add-on question for this repo is therefore mainly packaging and
 viewer integration, not proof-of-concept parser rewrites.
-

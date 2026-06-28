@@ -35,7 +35,7 @@ Useful options:
 - `--timeout <seconds>` per-mutant timeout
 - `--threshold <0-1>` default is 1.0
 - `--fail-on-empty` exits with code 3 when no mutants are generated
-- `--format json|markdown|html|sarif`
+- `--format json|markdown|html|sarif|mutation-testing-elements`
 - `--resume <report>` resumes from previous completed run
 - `--artifact-dir <path>` for build/test logs
 - `--config <path>` for YAML/JSON defaults

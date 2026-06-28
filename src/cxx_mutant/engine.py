@@ -140,14 +140,70 @@ def normalize_mutator_list(raw: str) -> list[str]:
     return vals
 
 
-def _strip_noncode(line: str) -> str:
+def _strip_noncode(line: str, in_block_comment: bool = False) -> tuple[str, bool]:
     """Blank out // comments and "string"/'c' literals so we never mutate them."""
     if line.lstrip().startswith("#"):
-        return " " * len(line)
-    out = re.sub(r"//.*$", "", line)
-    out = re.sub(r'"(\\.|[^"\\])*"', lambda m: " " * len(m.group(0)), out)
-    out = re.sub(r"'(\\.|[^'\\])*'", lambda m: " " * len(m.group(0)), out)
-    return out
+        return " " * len(line), in_block_comment
+
+    i = 0
+    out: list[str] = []
+    n = len(line)
+    while i < n:
+        if in_block_comment:
+            end = line.find("*/", i)
+            if end == -1:
+                out.append(" " * (n - i))
+                return "".join(out), True
+            out.append(" " * (end + 2 - i))
+            i = end + 2
+            in_block_comment = False
+            continue
+
+        if line[i : i + 2] == "/*":
+            end = line.find("*/", i + 2)
+            if end == -1:
+                out.append(" " * (n - i))
+                return "".join(out), True
+            out.append(" " * (end + 2 - i))
+            i = end + 2
+            continue
+
+        if line[i : i + 2] == "//":
+            out.append(" " * (n - i))
+            break
+
+        if line[i] == '"':
+            end = i + 1
+            while end < n:
+                if line[end] == "\\":
+                    end += 2
+                    continue
+                if line[end] == '"':
+                    end += 1
+                    break
+                end += 1
+            out.append(" " * (end - i))
+            i = end
+            continue
+
+        if line[i] == "'":
+            end = i + 1
+            while end < n:
+                if line[end] == "\\":
+                    end += 2
+                    continue
+                if line[end] == "'":
+                    end += 1
+                    break
+                end += 1
+            out.append(" " * (end - i))
+            i = end
+            continue
+
+        out.append(line[i])
+        i += 1
+
+    return "".join(out), in_block_comment
 
 
 def parse_lines(spec: str) -> set[int]:
@@ -208,11 +264,12 @@ def discover(repo: str, path: str, only: set[int] | None, enabled: list[str]) ->
     full = os.path.join(repo, path)
     with open(full) as f:
         src = f.readlines()
+    in_block_comment = False
     muts: list[Mutant] = []
     for i, raw in enumerate(src, start=1):
         if only is not None and i not in only:
             continue
-        code = _strip_noncode(raw)
+        code, in_block_comment = _strip_noncode(raw, in_block_comment=in_block_comment)
         for mutator in enabled:
             for orig, new in MUTATORS[mutator]:
                 pattern = _TOKEN_PATTERNS.get(orig)
@@ -284,6 +341,19 @@ def _git_dirty_files(repo: str, paths: list[str]) -> list[str]:
         if path:
             dirty.append(path)
     return dirty
+
+
+def _is_tracked_file(repo: str, path: str) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "-C", repo, "ls-files", "--error-unmatch", path],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return result.returncode == 0
 
 
 def _discover_mode(repo: str, path: str, only: set[int] | None, enabled: list[str], mode: str) -> list[Mutant]:
@@ -784,7 +854,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--output-format", default="legacy", choices=["legacy", "cxx-mutant"],
                     dest="output_format",
                     help="Compatibility report format; legacy keeps old engine fields")
-    ap.add_argument("--format", default="json", choices=["json", "markdown", "html", "sarif"],
+    ap.add_argument("--format", default="json", choices=["json", "markdown", "html", "sarif", "mutation-testing-elements"],
                     help="Report artifact format")
     ap.add_argument("--threshold", type=float, default=None)
     ap.add_argument("--fail-on-empty", action="store_true", dest="fail_on_empty")
@@ -958,7 +1028,8 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         if args.worktree_mode == "inplace":
             for path in files:
-                subprocess.run(["git", "-C", repo, "checkout", "--", path], check=False)
+                if _is_tracked_file(repo, path):
+                    subprocess.run(["git", "-C", repo, "checkout", "--", path], check=False)
 
     rep.finalize()
     _write_report(args.report, rep, output_mode=output_mode)
@@ -969,6 +1040,8 @@ def main(argv: list[str] | None = None) -> int:
         _write_human_artifact(args.report, "html", _format_html(rep))
     elif args.format == "sarif":
         _write_human_artifact(args.report, "sarif", _format_sarif(rep))
+    elif args.format == "mutation-testing-elements":
+        _write_human_artifact(args.report, "json", _mutation_testing_elements(rep))
 
     if not args.quiet:
         print(

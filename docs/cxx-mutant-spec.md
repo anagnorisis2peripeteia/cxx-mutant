@@ -105,7 +105,7 @@ Status notes:
 Report options:
 
 - `--report <path>`: JSON report path.
-- `--format json|markdown|html|sarif`: output format for stdout or generated report.
+- `--format json|markdown|html|sarif|mutation-testing-elements`: output format for stdout or generated report.
 - `--quiet`: write only report output to stdout.
 
 ### `list-mutants`
@@ -302,6 +302,8 @@ Safety rules:
 - Emit enough cleanup metadata to recover after interruption.
 
 Current status: `git-worktree` and `copy` modes are now implemented for isolated per-mutant runs. Inplace mode still enforces dirty-tree guard and preserves existing cleanup behavior. Sharding is also implemented, applied after `--max-mutants` and `--run-mutant-id` filtering so shards are deterministic and non-overlapping.
+- Discovery now strips line/block comments and string/char literals before token matching (including block comment spans) to reduce false-positive mutants.
+- `mutation-testing-elements` is supported as a direct `--format` output target for Stryker-oriented tooling.
 
 ## Configuration file
 
