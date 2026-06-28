@@ -22,11 +22,11 @@ cxx-mutant run \
 Contract details:
 
 - Top-level:
-  - `mutationTestingElements.schemaVersion = "2.0"`
-  - `mutationTestingElements.files`: map keyed by path.
-  - `mutationTestingElements.testFiles`: emitted as `{}` in the engine today.
-  - `mutationTestingElements.language = "cpp"`
-  - `mutationTestingElements.projectRoot` is the repository root.
+  - `schemaVersion = "2.0"`
+- `files`: map keyed by path.
+- `testFiles`: emitted as `{}` in the engine today.
+- `language = "cpp"`
+- `projectRoot` is the repository root.
 - Per-file:
   - `source`: full source text when discoverable.
   - `mutants`: ordered list of mutants.

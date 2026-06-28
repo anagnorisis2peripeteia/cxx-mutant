@@ -227,11 +227,11 @@ Compatibility notes:
 `cxx-mutant` must emit this projection when `--format mutation-testing-elements` is requested:
 
 - Top-level keys:
-  - `mutationTestingElements.schemaVersion = "2.0"`
-  - `mutationTestingElements.files`
-  - `mutationTestingElements.testFiles`
-  - `mutationTestingElements.language = "cpp"`
-  - `mutationTestingElements.projectRoot`
+  - `schemaVersion = "2.0"`
+  - `files`
+  - `testFiles`
+  - `language = "cpp"`
+  - `projectRoot`
 - Per mutant payload:
   - `id`, `mutatorName`, `description`, `original`, `replacement`
   - `status` in Stryker domain (`Killed|Survived|CompileError|TimedOut|Pending|RuntimeError`)

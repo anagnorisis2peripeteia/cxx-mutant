@@ -74,7 +74,8 @@ parser already).
 
 `--format mutation-testing-elements` emits a Stryker-style, machine-readable report
 with per-file source and mutant entries suitable for `stryker-cxx` integration.
-This format includes mutator descriptions, status mapping (`Killed`/`Survived`/etc.),
+The output is a direct `schemaVersion: 2.0` payload (not wrapped in
+`cxx-mutant.report.v1`), and includes mutator descriptions, status mapping,
 location spans, and a reproducible `runCommand` per mutant.
 
 ## Commands
