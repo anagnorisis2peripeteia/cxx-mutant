@@ -234,7 +234,7 @@ Compatibility notes:
   - `projectRoot`
 - Per mutant payload:
   - `id`, `mutatorName`, `description`, `original`, `replacement`
-  - `status` in Stryker domain (`Killed|Survived|CompileError|NoCoverage|Timeout|TimedOut|Pending|RuntimeError`)
+  - `status` in Stryker domain (`Killed|Survived|NoCoverage|Timeout|Pending|RuntimeError`)
   - `statusReason`, `nodeKind`, `runCommand`
   - `location.start` / `location.end`
 
@@ -242,8 +242,8 @@ Status mapping from engine statuses:
 
 - `KILLED` -> `Killed`
 - `SURVIVED` -> `Survived`
-- `BUILD_ERROR` -> `NoCoverage` for parser-facing MTE; `CompileError` is still accepted for compatibility in adapters.
-- `TIMEOUT` -> `Timeout` for parser-facing MTE; `TimedOut` is still accepted for compatibility in adapters.
+- `BUILD_ERROR` -> `NoCoverage` for parser-facing MTE.
+- `TIMEOUT` -> `Timeout` for parser-facing MTE.
 - `PENDING` -> `Pending`
 - all other statuses -> `RuntimeError`
 

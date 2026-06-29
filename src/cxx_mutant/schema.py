@@ -200,9 +200,7 @@ def _validate_mte_mutant(mut: Any, errors: list[str], *, prefix: str) -> bool:
     if status and str(status) not in {
         "Killed",
         "Survived",
-        "CompileError",
         "NoCoverage",
-        "TimedOut",
         "Timeout",
         "Pending",
         "RuntimeError",
@@ -238,9 +236,7 @@ def supported_mte_statuses() -> Iterable[str]:
     return (
         "Killed",
         "Survived",
-        "CompileError",
         "NoCoverage",
-        "TimedOut",
         "Timeout",
         "Pending",
         "RuntimeError",
