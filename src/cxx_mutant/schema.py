@@ -201,7 +201,9 @@ def _validate_mte_mutant(mut: Any, errors: list[str], *, prefix: str) -> bool:
         "Killed",
         "Survived",
         "CompileError",
+        "NoCoverage",
         "TimedOut",
+        "Timeout",
         "Pending",
         "RuntimeError",
     }:
@@ -233,7 +235,16 @@ def require_mte(payload: dict[str, Any]) -> None:
 
 
 def supported_mte_statuses() -> Iterable[str]:
-    return ("Killed", "Survived", "CompileError", "TimedOut", "Pending", "RuntimeError")
+    return (
+        "Killed",
+        "Survived",
+        "CompileError",
+        "NoCoverage",
+        "TimedOut",
+        "Timeout",
+        "Pending",
+        "RuntimeError",
+    )
 
 
 def supported_native_statuses() -> Iterable[str]:

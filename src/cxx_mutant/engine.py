@@ -685,8 +685,8 @@ def _mte_status(status: str) -> str:
     return {
         "KILLED": "Killed",
         "SURVIVED": "Survived",
-        "BUILD_ERROR": "CompileError",
-        "TIMEOUT": "TimedOut",
+        "BUILD_ERROR": "NoCoverage",
+        "TIMEOUT": "Timeout",
         "PENDING": "Pending",
     }.get(status.upper(), "RuntimeError")
 

@@ -112,7 +112,7 @@ class TestContracts(unittest.TestCase):
 
         flat = payload["files"]["src/foo.cpp"]["mutants"]
         self.assertEqual(flat[0]["status"], "Killed")
-        self.assertEqual(flat[1]["status"], "TimedOut")
+        self.assertEqual(flat[1]["status"], "Timeout")
 
     def test_require_mte_guard(self) -> None:
         rep = self._base_report()

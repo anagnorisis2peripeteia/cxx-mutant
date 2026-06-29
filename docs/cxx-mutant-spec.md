@@ -37,7 +37,7 @@ surfaces:
 - [x] Repro-command capture on every executed mutant (`reproCommand`).
 - [x] `mutation-testing-elements` projection (`schemaVersion: 2.0`) with:
   - stable `location.start`/`location.end`
-  - Stryker-like statuses and `TimedOut`
+  - Stryker-like statuses and `Timeout`/`NoCoverage`
   - mutator `description` and `runCommand`
   - `projectRoot`, `language` fields.
 - [x] Basic Stryker migration docs and Marmorkrebs compatibility.
@@ -234,7 +234,7 @@ Compatibility notes:
   - `projectRoot`
 - Per mutant payload:
   - `id`, `mutatorName`, `description`, `original`, `replacement`
-  - `status` in Stryker domain (`Killed|Survived|CompileError|TimedOut|Pending|RuntimeError`)
+  - `status` in Stryker domain (`Killed|Survived|CompileError|NoCoverage|Timeout|TimedOut|Pending|RuntimeError`)
   - `statusReason`, `nodeKind`, `runCommand`
   - `location.start` / `location.end`
 
@@ -242,8 +242,8 @@ Status mapping from engine statuses:
 
 - `KILLED` -> `Killed`
 - `SURVIVED` -> `Survived`
-- `BUILD_ERROR` -> `CompileError`
-- `TIMEOUT` -> `TimedOut`
+- `BUILD_ERROR` -> `NoCoverage` for parser-facing MTE; `CompileError` is still accepted for compatibility in adapters.
+- `TIMEOUT` -> `Timeout` for parser-facing MTE; `TimedOut` is still accepted for compatibility in adapters.
 - `PENDING` -> `Pending`
 - all other statuses -> `RuntimeError`
 

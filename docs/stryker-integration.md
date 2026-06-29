@@ -36,7 +36,7 @@ Contract details:
   - `description` (operator transformation language)
   - `original`
   - `replacement`
-  - `status` (`Killed`, `Survived`, `CompileError`, `TimedOut`, `Pending`, `RuntimeError`)
+- `status` (`Killed`, `Survived`, `NoCoverage`, `Timeout`, `Pending`, `RuntimeError`, plus compatibility aliases `CompileError`, `TimedOut`)
   - `statusReason`
   - `nodeKind` (clang token/AST kind when available)
   - `runCommand` (single command used to re-run this mutant)
@@ -46,8 +46,8 @@ Status mapping from engine statuses:
 
 - `KILLED` -> `Killed`
 - `SURVIVED` -> `Survived`
-- `BUILD_ERROR` -> `CompileError`
-- `TIMEOUT` -> `TimedOut`
+- `BUILD_ERROR` -> `NoCoverage` (legacy alias `CompileError` remains accepted)
+- `TIMEOUT` -> `Timeout` (legacy alias `TimedOut` remains accepted)
 - `PENDING` -> `Pending`
 
 All other statuses map to `RuntimeError`.
